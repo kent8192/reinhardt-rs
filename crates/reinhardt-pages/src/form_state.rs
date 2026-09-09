@@ -1181,7 +1181,8 @@ fn clear_server_error_from_state<Form>(
 	for field in form.runtime_fields() {
 		form.runtime_set_custom_widget_error(*field, None);
 	}
-	custom_widget_error_fields.borrow_mut().clear();
+	*custom_widget_error_fields.borrow_mut() =
+		crate::reactive::untracked(|| collect_custom_widget_errors(form));
 	state.field_errors.set(HashMap::new());
 	state.form_error.set(None);
 	state.submit_error.set(None);
@@ -1840,8 +1841,9 @@ where
 	///
 	/// Reset is never implicit after a successful submit and is not wired to a
 	/// native `<button type="reset">` or the browser's reset event. Use
-	/// [`Self::sync_after_native_reset`] explicitly when an application chooses
-	/// native reset behavior. A pending [`FormAction`] request continues running,
+	/// [`Self::sync_after_native_reset`] for application-owned controls after native
+	/// reset. Generated `form!` controls synchronize browser defaults automatically
+	/// without invoking this method. A pending [`FormAction`] request continues running,
 	/// but its stale completion cannot restore form-owned submit state.
 	pub fn reset(&self) {
 		let _ = self.in_owner_scope(|| {
@@ -1871,12 +1873,12 @@ where
 	/// Syncs runtime state after an explicitly handled native form reset.
 	///
 	/// This compatibility method copies values already restored by the browser,
-	/// recomputes aggregate dirty state, clears field-level and aggregate
-	/// touched flags, and clears field, collection, path, form, and submit
-	/// errors. It does not clear collection/path touched tracking, submission
-	/// flags, or connected actions, and it does not replace the explicit
-	/// [`Self::reset`] contract. Native reset events are not connected
-	/// automatically.
+	/// recomputes aggregate dirty state, clears field, collection, path, and
+	/// aggregate touched flags, and clears field, collection, path, form, and submit
+	/// errors. It preserves submission flags and connected actions, and it does
+	/// not replace the explicit [`Self::reset`] contract. Generated `form!` controls
+	/// synchronize native reset events automatically; application-owned controls
+	/// can call this method after synchronizing their browser values.
 	pub fn sync_after_native_reset(&self) {
 		let current = self.get_values();
 		let is_dirty = form_values_are_dirty(&self.form, &current, &self.default_values.borrow());
