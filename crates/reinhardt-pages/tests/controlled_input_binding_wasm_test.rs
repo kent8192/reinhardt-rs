@@ -2405,6 +2405,105 @@ fn assign_files(input: &web_sys::HtmlInputElement, files: &[web_sys::File]) {
 	input.set_files(transfer.files().as_ref());
 }
 
+#[rstest]
+#[case::mount(false)]
+#[case::hydrate(true)]
+#[test_attr(wasm_bindgen_test)]
+async fn generated_and_typed_file_bindings_preserve_their_value_shapes(
+	controls: ControlFixture,
+	#[case] hydrate: bool,
+) {
+	// Arrange: generated forms retain one browser File, while page bindings retain all files.
+	let document = controls.root.0.owner_document().expect("document");
+	document
+		.body()
+		.expect("body")
+		.append_child(&controls.root.0)
+		.expect("attach controls");
+	let (single, multiple) = controls.scope.enter(|| {
+		let form = reinhardt_pages::form! {
+			name: MixedFileBindings,
+			fields: { upload: FileField {} }
+		};
+		let single = form.upload.clone();
+		let multiple = Signal::new(Vec::<EventFile>::new());
+		let page = PageElement::new("div")
+			.child(form.into_page())
+			.child(
+				PageElement::new("form").child(
+					PageElement::new("input")
+						.attr("id", "typed-files")
+						.attr("type", "file")
+						.bool_attr("multiple", true)
+						.control_binding(ControlBinding::file(multiple)),
+				),
+			)
+			.into_page();
+		if hydrate {
+			controls.root.0.set_inner_html(&page.render_to_string());
+			let root = Element::new(controls.root.0.first_element_child().expect("SSR root"));
+			let _state = SsrStateElement::install(&document);
+			reinhardt_pages::hydration::hydrate(&HydratedControlPage(page), &root)
+				.expect("hydrate mixed file bindings");
+		} else {
+			page.mount(&Element::new(controls.root.0.clone()))
+				.expect("mount mixed file bindings");
+		}
+		(single, multiple)
+	});
+	let input = |selector| {
+		controls
+			.root
+			.0
+			.query_selector(selector)
+			.expect("query")
+			.expect("file input")
+			.unchecked_into::<web_sys::HtmlInputElement>()
+	};
+	let single_input = input("#upload");
+	let multiple_input = input("#typed-files");
+	let selected = [
+		browser_file("first.txt", "one"),
+		browser_file("second.txt", "two"),
+	];
+	let select = |input: &web_sys::HtmlInputElement| {
+		assign_files(input, &selected);
+		input
+			.dispatch_event(&web_sys::Event::new("change").expect("change"))
+			.expect("dispatch change");
+	};
+
+	// Act and assert: each descriptor receives its own value shape and clears independently.
+	select(&single_input);
+	select(&multiple_input);
+	assert_eq!(single.get(), Some(selected[0].clone()));
+	assert_eq!(
+		multiple
+			.get()
+			.iter()
+			.map(|file| file.name().to_owned())
+			.collect::<Vec<_>>(),
+		vec![String::from("first.txt"), String::from("second.txt")]
+	);
+	multiple.set(Vec::new());
+	assert_eq!(multiple_input.files().expect("multiple files").length(), 0);
+	assert_eq!(single.get(), Some(selected[0].clone()));
+	single.set(None);
+	assert_eq!(single_input.files().expect("single files").length(), 0);
+
+	// Native reset must notify both descriptor forms after the browser clears its FileLists.
+	select(&single_input);
+	select(&multiple_input);
+	single_input.form().expect("generated form").reset();
+	multiple_input.form().expect("typed form").reset();
+	TimeoutFuture::new(0).await;
+	with_runtime(|runtime| runtime.flush_updates());
+	assert_eq!(single.get(), None);
+	assert_eq!(multiple.get().len(), 0);
+	assert_eq!(single_input.files().expect("single files").length(), 0);
+	assert_eq!(multiple_input.files().expect("multiple files").length(), 0);
+}
+
 fn file_reset_form(
 	binding: ControlBinding,
 	hydrate: bool,
