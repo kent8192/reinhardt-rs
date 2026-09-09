@@ -4,6 +4,7 @@ use std::fmt;
 use std::num::IntErrorKind;
 
 use crate::reactive::{Signal, runtime::NodeId};
+use crate::types::page::EventFile;
 
 use super::is_boolean_attr_truthy;
 
@@ -142,6 +143,8 @@ pub enum ControlValue {
 	Checked(bool),
 	/// Values selected by a multiple-selection control.
 	SelectedValues(Vec<String>),
+	/// Files selected by a file-upload control.
+	Files(Vec<EventFile>),
 	/// The actual browser-owned file selected during hydration or native reset.
 	#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 	File(Option<web_sys::File>),
@@ -153,6 +156,7 @@ impl ControlValue {
 			Self::Text(_) => "text",
 			Self::Checked(_) => "checked",
 			Self::SelectedValues(_) => "selected-values",
+			Self::Files(_) => "files",
 			#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 			Self::File(_) => "file",
 		}
@@ -419,6 +423,29 @@ impl ControlBinding {
 					Ok(ControlWriteOutcome::Committed)
 				}
 				actual => Err(value_kind_mismatch(ControlKind::SelectMany, &actual)),
+			}),
+			snapshot,
+			hydration_preference: None,
+			native_reset: None,
+			lifetime_target: None,
+		}
+	}
+
+	/// Creates a binding for a file-upload signal.
+	pub fn file(signal: Signal<Vec<EventFile>>) -> Self {
+		let read_signal = signal;
+		let snapshot = signal_snapshot(signal);
+		Self {
+			kind: ControlKind::File,
+			radio_value: None,
+			target: signal.id(),
+			read: Shared::new(move || ControlValue::Files(read_signal.get())),
+			write: Shared::new(move |value| match value {
+				ControlValue::Files(files) => {
+					signal.set(files);
+					Ok(ControlWriteOutcome::Committed)
+				}
+				actual => Err(value_kind_mismatch(ControlKind::File, &actual)),
 			}),
 			snapshot,
 			hydration_preference: None,
@@ -1005,6 +1032,7 @@ impl_float_number_value!(f32, f64);
 mod tests {
 	use super::*;
 	use crate::reactive::{Effect, EffectTiming, ReactiveScope, Signal};
+	use crate::types::page::{EventFile, NativeEventFile};
 	use rstest::rstest;
 	use std::cell::RefCell;
 	use std::rc::Rc;
@@ -1038,6 +1066,137 @@ mod tests {
 
 		// Assert
 		assert_eq!(supported, expected);
+	}
+
+	#[rstest]
+	fn file_control_binding_preserves_file_order_when_written() {
+		ReactiveScope::run(|| {
+			// Arrange
+			let first = EventFile::from(&NativeEventFile::new("first.txt", "text/plain", 1, 10));
+			let second = EventFile::from(&NativeEventFile::new("second.txt", "text/plain", 2, 20));
+			let files = Signal::new(vec![first.clone(), second.clone()]);
+			let binding = ControlBinding::file(files.clone());
+			let expected = vec![second, first];
+
+			// Act
+			binding
+				.write(ControlValue::Files(expected.clone()))
+				.expect("file bindings accept file values");
+
+			// Assert
+			assert_eq!(binding.kind(), ControlKind::File);
+			assert_eq!(binding.read(), ControlValue::Files(expected.clone()));
+			assert_eq!(files.get(), expected);
+		});
+	}
+
+	#[rstest]
+	fn file_binding_snapshot_restores_files_after_write() {
+		ReactiveScope::run(|| {
+			// Arrange
+			let original = vec![EventFile::from(&NativeEventFile::new(
+				"original.txt",
+				"text/plain",
+				1,
+				10,
+			))];
+			let replacement = vec![EventFile::from(&NativeEventFile::new(
+				"replacement.txt",
+				"text/plain",
+				2,
+				20,
+			))];
+			let files = Signal::new(original.clone());
+			let binding = ControlBinding::file(files.clone());
+			let snapshot = binding.snapshot();
+
+			// Act
+			binding
+				.write(ControlValue::Files(replacement))
+				.expect("file bindings accept file values");
+			drop(snapshot);
+
+			// Assert
+			assert_eq!(files.get(), original);
+		});
+	}
+
+	#[rstest]
+	fn file_binding_snapshot_commit_keeps_files_after_write() {
+		ReactiveScope::run(|| {
+			// Arrange
+			let replacement = vec![EventFile::from(&NativeEventFile::new(
+				"replacement.txt",
+				"text/plain",
+				2,
+				20,
+			))];
+			let files = Signal::new(vec![EventFile::from(&NativeEventFile::new(
+				"original.txt",
+				"text/plain",
+				1,
+				10,
+			))]);
+			let binding = ControlBinding::file(files.clone());
+			let snapshot = binding.snapshot();
+
+			// Act
+			binding
+				.write(ControlValue::Files(replacement.clone()))
+				.expect("file bindings accept file values");
+			snapshot.commit();
+
+			// Assert
+			assert_eq!(files.get(), replacement);
+		});
+	}
+
+	#[rstest]
+	fn file_binding_rejects_non_file_values() {
+		ReactiveScope::run(|| {
+			// Arrange
+			let files = Signal::new(Vec::<EventFile>::new());
+			let binding = ControlBinding::file(files.clone());
+
+			// Act
+			let error = binding
+				.write(ControlValue::Text("not-a-file".to_owned()))
+				.expect_err("file bindings reject textual values");
+
+			// Assert
+			assert_eq!(
+				error,
+				ControlBindingError::ValueKindMismatch {
+					control: ControlKind::File,
+					actual: "text",
+				}
+			);
+			assert!(files.get().is_empty());
+		});
+	}
+
+	#[rstest]
+	fn text_binding_rejects_file_values() {
+		ReactiveScope::run(|| {
+			// Arrange
+			let value = Signal::new("unchanged".to_owned());
+			let binding = ControlBinding::text(value.clone());
+
+			// Act
+			let error = binding
+				.write(ControlValue::Files(Vec::new()))
+				.expect_err("text bindings reject file values");
+
+			// Assert
+			assert_eq!(
+				error,
+				ControlBindingError::ValueKindMismatch {
+					control: ControlKind::Text,
+					actual: "files",
+				}
+			);
+			assert_eq!(value.get(), "unchanged");
+		});
 	}
 
 	#[rstest]
