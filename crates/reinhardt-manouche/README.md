@@ -42,6 +42,10 @@ accepts `content`, maximum sizes accept intrinsic sizing keywords, grid line
 names exclude reserved keywords, and `grid-template-areas` requires rectangular
 named areas with consistent row widths.
 
+`RadioInput` is accepted only for explicit string-valued choice fields. Both
+the shared form validator and the downstream macro validator reject it in
+model-form overrides, which have no single-radio renderer.
+
 Source formatting has a separate, non-semantic parser. Formatting never
 replaces compilation or validation.
 

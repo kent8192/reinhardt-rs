@@ -2205,7 +2205,13 @@ fn parse_model_widget(ident: &syn::Ident) -> Result<TypedWidget> {
 	}
 	if matches!(
 		ident.to_string().as_str(),
-		"Select" | "SelectMultiple" | "RadioSelect" | "MonthInput" | "WeekInput" | "FileInput"
+		"Select"
+			| "SelectMultiple"
+			| "RadioInput"
+			| "RadioSelect"
+			| "MonthInput"
+			| "WeekInput"
+			| "FileInput"
 	) {
 		return Err(Error::new(
 			ident.span(),
@@ -5754,7 +5760,7 @@ mod tests {
 	// Choice widget validation tests
 	// =========================================================
 
-	#[test]
+	#[rstest]
 	fn test_validate_radio_input_string_choices() {
 		// Arrange
 		let expected_value: syn::Expr = syn::parse_quote!("yes");
@@ -5812,7 +5818,28 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[rstest]
+	fn test_validate_radio_input_rejects_model_override() {
+		// Arrange
+		let input = quote! {
+			name: QuestionForm,
+			model: Question,
+			policy: QuestionFields,
+			fields: [answer],
+			overrides: { answer: { widget: RadioInput } },
+		};
+
+		// Act
+		let error = parse_and_validate(input).unwrap_err();
+
+		// Assert
+		assert_eq!(
+			error.to_string(),
+			"this widget is not supported by model-backed forms; use a supported scalar widget or an explicit non-model form"
+		);
+	}
+
+	#[rstest]
 	fn test_validate_radio_input_rejects_other_field_types() {
 		// Arrange
 		for field_type in [
@@ -5848,7 +5875,7 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[rstest]
 	fn test_validate_radio_input_rejects_invalid_choice_properties() {
 		// Arrange
 		for (properties, expected) in [
