@@ -2630,6 +2630,7 @@ fn generate_model_form(
 						#pages_crate::component::ControlValue::Text(_) => "text",
 						#pages_crate::component::ControlValue::Checked(_) => "checked",
 						#pages_crate::component::ControlValue::SelectedValues(_) => "selected-values",
+						#pages_crate::component::ControlValue::Files(_) => "files",
 						#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 						#pages_crate::component::ControlValue::File(_) => "file",
 					}
