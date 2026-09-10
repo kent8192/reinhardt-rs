@@ -1204,8 +1204,9 @@ pub fn head(input: TokenStream) -> TokenStream {
 /// `RadioInput` renders one control for a string-valued `ChoiceField` (including
 /// `ChoiceField<String>`). Its value is `"on"` when `choices` is omitted, or the
 /// value from exactly one static option, such as `choices: [("yes", "Yes")]`.
-/// Empty or multiple options, `OptGroup`, and `choices_from` are rejected. Use
-/// `RadioSelect` for a group of radio buttons populated through `choices_from`.
+/// Empty or multiple options, `OptGroup`, `choices_from`, and model-form widget
+/// overrides are rejected. Use `RadioSelect` for a group of radio buttons
+/// populated through `choices_from`.
 /// Boolean fields use `CheckboxInput` instead.
 ///
 /// The single input keeps the field's name and ID. Its associated label uses

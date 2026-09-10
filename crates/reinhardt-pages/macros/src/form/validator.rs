@@ -2386,7 +2386,13 @@ fn parse_model_widget(ident: &syn::Ident) -> Result<TypedWidget> {
 	}
 	if matches!(
 		ident.to_string().as_str(),
-		"Select" | "SelectMultiple" | "RadioSelect" | "MonthInput" | "WeekInput" | "FileInput"
+		"Select"
+			| "SelectMultiple"
+			| "RadioInput"
+			| "RadioSelect"
+			| "MonthInput"
+			| "WeekInput"
+			| "FileInput"
 	) {
 		return Err(Error::new(
 			ident.span(),
@@ -6305,9 +6311,9 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn test_model_form_rejects_widget_without_model_renderer() {
-		let widget: syn::Ident = syn::parse_quote!(SelectMultiple);
-
+	#[case::multiple_choice(syn::parse_quote!(SelectMultiple))]
+	#[case::scalar_radio(syn::parse_quote!(RadioInput))]
+	fn test_model_form_rejects_widget_without_model_renderer(#[case] widget: syn::Ident) {
 		let error = parse_model_widget(&widget).unwrap_err();
 
 		assert_eq!(

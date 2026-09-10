@@ -56,6 +56,7 @@ fn radio_input_renders_option_labels_disabled_and_unbound_defaults() {
 				widget: RadioInput,
 				choices: [("yes", "Yes") { disabled }],
 				autocomplete: "off",
+				autofocus,
 				initial: "yes",
 				required,
 			}
@@ -65,6 +66,7 @@ fn radio_input_renders_option_labels_disabled_and_unbound_defaults() {
 				label: "Explicit label",
 				initial: "accepted",
 				bind: false,
+				autofocus: true,
 			}
 		}
 	};
@@ -72,9 +74,9 @@ fn radio_input_renders_option_labels_disabled_and_unbound_defaults() {
 	let expected = concat!(
 		"<form id=\"radio-options\" action=\"/answer\" method=\"get\" class=\"reinhardt-form\">",
 		"<div class=\"reinhardt-field\"><label for=\"answer\" class=\"reinhardt-label\">Yes</label>",
-		"<input type=\"radio\" name=\"answer\" id=\"answer\" class=\"reinhardt-input\" autocomplete=\"off\" required=\"required\" disabled=\"disabled\" value=\"yes\" checked=\"checked\" />",
+		"<input type=\"radio\" name=\"answer\" id=\"answer\" class=\"reinhardt-input\" autocomplete=\"off\" required=\"required\" disabled=\"disabled\" autofocus=\"autofocus\" value=\"yes\" checked=\"checked\" />",
 		"</div><div class=\"reinhardt-field\"><label for=\"snapshot\" class=\"reinhardt-label\">Explicit label</label>",
-		"<input type=\"radio\" name=\"snapshot\" id=\"snapshot\" value=\"accepted\" class=\"reinhardt-input\" checked=\"checked\" />",
+		"<input type=\"radio\" name=\"snapshot\" id=\"snapshot\" value=\"accepted\" class=\"reinhardt-input\" checked=\"checked\" autofocus=\"autofocus\" />",
 		"</div></form>",
 	);
 

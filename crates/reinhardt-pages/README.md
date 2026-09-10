@@ -852,8 +852,8 @@ field's name and ID. Its option value is `"on"` by default; supply exactly one
 static option, such as `choices: [("yes", "Yes")]`, to choose another value.
 The associated label uses the field label, the option label, or the field name,
 in that order. An option marked `disabled` disables the control. Empty or
-multiple options, grouped options, dynamic choices, and other field types are
-rejected. Use `RadioSelect` with `choices_from` for a radio group and
+multiple options, grouped options, dynamic choices, model-form overrides, and
+other field types are rejected. Use `RadioSelect` with `choices_from` for a radio group and
 `CheckboxInput` for a boolean value.
 
 The single radio is checked when the field value equals the option value. On
@@ -879,6 +879,8 @@ by other bound fields. Their controls remain mounted while item keys and indices
 stay unchanged, including in rows that mix radios with other bound widgets.
 Forms with a bound scalar radio synchronize resets through their form handler;
 individual controls do not register a second reset that could clear newer errors.
+Unsupported generic field types are rejected during macro expansion, before any
+form can be mounted.
 
 Typed native attributes are accepted for the controls that support them:
 
