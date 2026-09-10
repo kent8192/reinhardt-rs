@@ -882,11 +882,15 @@ other field types are rejected. Use `RadioSelect` with `choices_from` for a radi
 The single radio is checked when the field value equals the option value. On
 WASM, selecting it updates the field; an unchecked change event leaves the
 value unchanged. Programmatic signal updates and runtime `reset()` synchronize
-the checked state, with reset restoring the current defaults. Clicking a
+the checked state, with reset restoring the current defaults. A required radio
+must equal its fixed option value during runtime validation and programmatic
+submission, including collection fields. Hydration preserves explicit runtime
+field setters and field resets while adopting edits to other controls. Clicking a
 selected radio does not clear it. Forms with a bound scalar radio also restore
 their bound scalar and collection fields on native reset, including defaults
-loaded after mounting. Collection defaults follow item keys across reordering;
-without persisted loader defaults, existing rows use their values at page
+loaded after mounting or saved with `reset_default_values()`. Collection defaults
+follow item keys across reordering; without persisted loader defaults, existing
+rows use their values at page
 construction and new rows use field defaults. Native resets preserve collection
 keys, row order, and unbound values, and clear file inputs. The restored DOM and
 signals agree before runtime touched state and errors are cleared, without
@@ -895,9 +899,12 @@ or synchronously after `reset()` supersede the pending reset, including equal-va
 writes. Synchronization waits for a browser task after reset dispatch, so later
 listeners can cancel it before Rust state changes. Numeric parse errors are
 cleared with their restored values, even when a rejected editor left the source
-equal to its default. Custom widget errors remain reactive after reset.
-`autocomplete` is preserved on scalar and collection radios,
-and reactive replacements retain focus within their own subtree. For scalar
+equal to its default. Passwords share the form's reset owner, so their native
+synchronization cannot cancel resets of sibling fields. Pending work stops when
+its mounted controls or source scope are disposed. Custom widget errors remain
+reactive after reset. Radio focus stays within the replacement subtree for both
+client mounting and SSR hydration.
+`autocomplete` is preserved on scalar and collection radios. For scalar
 fields, `bind: false` renders the current value without installing two-way binding.
 Bound radios use controlled bindings and typed `ResetEvent` handling. Collection
 radios share the generated control descriptor and source-lifetime tracking used

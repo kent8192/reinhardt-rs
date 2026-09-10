@@ -325,6 +325,12 @@ impl Drop for ControlBindingSnapshot {
 	}
 }
 
+#[derive(Clone)]
+enum NativeReset {
+	Control(Shared<dyn Fn()>),
+	Form(Shared<dyn Fn() -> Box<dyn std::any::Any>>),
+}
+
 /// Cloneable type-erased reader and writer for a controlled form element.
 #[derive(Clone)]
 pub struct ControlBinding {
@@ -335,7 +341,7 @@ pub struct ControlBinding {
 	write: WriteValue,
 	snapshot: SnapshotValue,
 	hydration_preference: Option<HydrationPreference>,
-	native_reset: Option<Shared<dyn Fn()>>,
+	native_reset: Option<NativeReset>,
 	lifetime_target: Option<NodeId>,
 }
 
@@ -561,8 +567,33 @@ impl ControlBinding {
 	/// Registers runtime bookkeeping after all native reset values are adopted.
 	#[doc(hidden)]
 	pub fn on_native_reset(mut self, callback: impl Fn() + 'static) -> Self {
-		self.native_reset = Some(Shared::new(callback));
+		self.native_reset = Some(NativeReset::Control(Shared::new(callback)));
 		self
+	}
+
+	/// Delegates native reset synchronization to the containing generated form.
+	#[doc(hidden)]
+	pub fn with_form_reset_owner(
+		mut self,
+		register: impl Fn() -> Box<dyn std::any::Any> + 'static,
+	) -> Self {
+		self.native_reset = Some(NativeReset::Form(Shared::new(register)));
+		self
+	}
+
+	/// Retains the form reset owner's mount registration until this control unmounts.
+	#[doc(hidden)]
+	pub fn register_form_reset_owner(&self) -> Option<Box<dyn std::any::Any>> {
+		match &self.native_reset {
+			Some(NativeReset::Form(register)) => Some(register()),
+			_ => None,
+		}
+	}
+
+	/// Returns whether this control needs the shared per-control reset listener.
+	#[doc(hidden)]
+	pub fn needs_native_reset_registration(&self) -> bool {
+		matches!(self.native_reset, Some(NativeReset::Control(_)))
 	}
 
 	/// Returns whether a generated form owns native reset bookkeeping.
@@ -574,7 +605,7 @@ impl ControlBinding {
 	/// Updates native reset bookkeeping within the batch of browser value writes.
 	#[doc(hidden)]
 	pub fn notify_native_reset(&self) {
-		if let Some(callback) = &self.native_reset {
+		if let Some(NativeReset::Control(callback)) = &self.native_reset {
 			callback();
 		}
 	}

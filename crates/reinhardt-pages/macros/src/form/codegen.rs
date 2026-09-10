@@ -5904,10 +5904,25 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 		.iter()
 		.filter(|field| field.bind && matches!(field.widget, TypedWidget::RadioInput))
 		.collect();
+	let native_reset_owner_setup = if !radio_fields.is_empty()
+		&& supports_form_runtime_contract(&macro_ast.fields)
+	{
+		quote! { let __native_reset_owner = #pages_crate::form_generated::NativeFormResetOwner::default(); }
+	} else {
+		TokenStream::new()
+	};
 	let native_reset_registration =
 		if !radio_fields.is_empty() && supports_form_runtime_contract(&macro_ast.fields) {
 			// The form listener owns reset ordering and supersession for all of its controls.
-			quote! { |binding: #pages_crate::component::ControlBinding| binding }
+			quote! {
+				{
+					let owner = __native_reset_owner.clone();
+					move |binding: #pages_crate::component::ControlBinding| {
+						let owner = owner.clone();
+						binding.with_form_reset_owner(move || owner.register())
+					}
+				}
+			}
 		} else {
 			quote! {
 				move |binding: #pages_crate::component::ControlBinding| {
@@ -6013,13 +6028,33 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 					#pages_crate::event::KnownEvent::Reset,
 					#pages_crate::typed_event_handler::<#pages_crate::event::ResetEvent, _>(move |event: #pages_crate::event::ResetEvent| {
 					let __radio_form = __radio_form.clone();
+					use ::wasm_bindgen::JsCast;
+					let Some(__reset_form) = event.raw().target()
+						.and_then(|target| target.dyn_into::<::web_sys::HtmlFormElement>().ok()) else {
+						return;
+					};
+					let __reset_is_live = {
+						let form = __reset_form.clone();
+						let lifetime = __radio_form.__native_reset_epoch.clone();
+						let owner = __native_reset_owner.clone();
+						let generation = owner.generation();
+						move || owner.is_active(generation) && form.is_connected() && lifetime.try_get_untracked().is_ok()
+					};
+					if !__reset_is_live() {
+						return;
+					}
 					#(#collection_snapshot_clones)*
 					let __reset_superseded = ::std::rc::Rc::new(::std::cell::Cell::new(false));
 					let __reset_scope = #pages_crate::reactive::ReactiveScope::new();
 					__reset_scope.enter(|| #pages_crate::reactive::Effect::new_with_timing({
 						let __watched_form = __radio_form.clone();
+						let __watch_is_live = __reset_is_live.clone();
 						let __reset_superseded = ::std::rc::Rc::clone(&__reset_superseded);
 						move || {
+							if !__watch_is_live() {
+								__reset_superseded.set(true);
+								return;
+							}
 							let _ = #pages_crate::FormRuntimeSource::runtime_current_values(&__watched_form);
 							for field in #pages_crate::FormRuntimeSource::runtime_fields(&__watched_form) {
 								let _ = #pages_crate::FormRuntimeSource::runtime_custom_widget_error(&__watched_form, *field);
@@ -6034,10 +6069,12 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 					#pages_crate::platform::spawn_task(async move {
 						let _reset_scope = __reset_scope;
 						__after_reset.await;
+						// RAII control registrations and the source scope bound this deferred work.
+						if !__reset_is_live() {
+							return;
+						}
 						if !event.default_prevented() {
-							use ::wasm_bindgen::JsCast;
-							let __reset_form = event.raw().target()
-								.and_then(|target| target.dyn_into::<::web_sys::HtmlFormElement>().ok());
+							let __reset_form = Some(__reset_form);
 							let __sync_dom = || {
 								if let Some(__reset_form) = __reset_form.as_ref() {
 									let __reset_values = #pages_crate::FormRuntimeSource::runtime_current_values(&__radio_form);
@@ -6079,6 +6116,8 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 			let __explicitly_reset = self.__explicitly_reset.clone();
 			let __source_preferred_fields = self.__source_preferred_fields.clone();
 			let __native_reset_epoch = self.__native_reset_epoch.clone();
+
+			#native_reset_owner_setup
 			let __register_native_reset = #native_reset_registration;
 			#(#signal_bindings)*
 			#radio_reset_setup
@@ -7911,11 +7950,12 @@ fn generate_field_view(
 			let binding = signal_ident.map(|signal| {
 				quote! {
 					.control_binding(
-						#pages_crate::component::ControlBinding::radio(
+						__radio_register_native_reset(#pages_crate::component::ControlBinding::radio(
 							#signal, ::std::string::String::from(#value),
-						).prefer_source_on_hydration({
+						)).prefer_source_on_hydration({
 							let explicitly_reset = __radio_explicitly_reset.clone();
-							move || explicitly_reset.get()
+							let preferred_fields = __radio_source_preferred_fields.clone();
+							move || explicitly_reset.get() || preferred_fields.borrow().contains(#field_name_str)
 						})
 					)
 				}
@@ -7935,7 +7975,9 @@ fn generate_field_view(
 			if let Some(signal_ident) = signal_ident {
 				quote! {
 					{
+					let __radio_register_native_reset = __register_native_reset.clone();
 					let __radio_explicitly_reset = self.__explicitly_reset.clone();
+					let __radio_source_preferred_fields = self.__source_preferred_fields.clone();
 					#pages_crate::component::Page::reactive(move || {
 						let __radio_checked = #signal_ident.get_untracked() == #value;
 						#input.into_page()

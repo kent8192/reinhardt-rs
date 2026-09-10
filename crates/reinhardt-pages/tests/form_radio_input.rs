@@ -253,14 +253,22 @@ fn required_radio_input_rejects_unselected_scalar_and_collection_values() {
 	let radio = form! {
 		name: RequiredRadios,
 		fields: {
-			answer: ChoiceField<String> { widget: RadioInput, required }
+			answer: ChoiceField<String> {
+				widget: RadioInput,
+				required
+			}
 			empty: ChoiceField<String> {
-				widget: RadioInput, required, choices: [("", "Empty")], initial: "other"
+				widget: RadioInput,
+				required,
+				choices: [("", "Empty")],
+				initial: "other"
 			}
 			answers: FieldArray {
 				fields: {
 					answer: ChoiceField<String> {
-						widget: RadioInput, required, choices: [("yes", "Yes")]
+						widget: RadioInput,
+						required,
+						choices: [("yes", "Yes")]
 					}
 				}
 			}
@@ -320,6 +328,25 @@ mod browser {
 	use std::{cell::Cell, rc::Rc};
 	use wasm_bindgen::JsCast;
 
+	struct HydratedPage(Page);
+
+	impl reinhardt_pages::component::Component for HydratedPage {
+		fn name() -> &'static str {
+			"HydratedRadioPage"
+		}
+		fn render(&self) -> Page {
+			self.0.clone()
+		}
+	}
+
+	struct SsrStateElement(web_sys::Element);
+
+	impl Drop for SsrStateElement {
+		fn drop(&mut self) {
+			self.0.remove();
+		}
+	}
+
 	struct TestContainer(web_sys::Element, reinhardt_pages::reactive::ReactiveScope);
 
 	impl TestContainer {
@@ -335,6 +362,17 @@ mod browser {
 				.enter(|| page.mount(&Element::new(container.0.clone())))
 				.unwrap();
 			container
+		}
+
+		fn hydrate(&self, page: Page) {
+			let document = web_sys::window().unwrap().document().unwrap();
+			let state = SsrStateElement(document.create_element("script").unwrap());
+			state.0.set_id("ssr-state");
+			document.body().unwrap().append_child(&state.0).unwrap();
+			let root = Element::new(self.0.first_element_child().unwrap());
+			self.1
+				.enter(|| reinhardt_pages::hydration::hydrate(&HydratedPage(page), &root))
+				.unwrap();
 		}
 
 		fn input(&self, id: &str) -> web_sys::HtmlInputElement {
@@ -411,9 +449,13 @@ mod browser {
 			name: UpdatedRadioDefaults,
 			fields: {
 				answer: ChoiceField<String> { widget: RadioInput }
-				name: CharField { initial: "initial" }
+				name: CharField {
+					initial: "initial"
+				}
 				answers: FieldArray {
-					fields: { answer: ChoiceField<String> { widget: RadioInput } }
+					fields: {
+						answer: ChoiceField<String> { widget: RadioInput }
+					}
 				}
 			}
 		};
@@ -443,6 +485,127 @@ mod browser {
 		assert!(!runtime.form_state().is_dirty.get());
 		assert!(!runtime.get_path_state(path).is_dirty);
 		assert_eq!(radio.answers().get()[0].key(), key);
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	async fn native_radio_reset_owns_password_synchronization() {
+		// Arrange
+		let radio = form! {
+			name: PasswordRadioReset,
+			fields: {
+				answer: ChoiceField<String> { widget: RadioInput }
+				password: CharField {
+					widget: PasswordInput,
+					initial: "initial"
+				}
+				name: CharField {
+					initial: "saved"
+				}
+			}
+		};
+		let runtime = use_form(&radio).build();
+		let container = TestContainer::mount(radio.clone().into_page());
+		runtime.set_value(radio.answer_field(), String::from("on"));
+		runtime.set_value(radio.password_field(), String::from("edited"));
+		runtime.set_value(radio.name_field(), String::from("edited"));
+
+		// Act
+		container.native_form().reset();
+		gloo_timers::future::TimeoutFuture::new(0).await;
+
+		// Assert: the password's internal reset cannot supersede its sibling fields.
+		assert_eq!(runtime.get_values().answer, "");
+		assert_eq!(runtime.get_values().password, "initial");
+		assert_eq!(runtime.get_values().name, "saved");
+		assert_eq!(container.input("password").value(), "initial");
+		assert!(!container.input("answer").checked());
+		assert!(!runtime.form_state().is_dirty.get());
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	async fn native_radio_reset_stops_after_unmount_and_scope_disposal() {
+		// Arrange: shared source state outlives the mounted form.
+		let radio = form! {
+			name: UnmountedRadioReset,
+			fields: {
+				answer: ChoiceField<String> { widget: RadioInput }
+			}
+		};
+		radio.answer().set(String::from("on"));
+		let container = TestContainer::mount(radio.clone().into_page());
+
+		// Act: unmount while reset is pending, then retain the old DOM without its bindings.
+		let retired_form = container.native_form();
+		retired_form.reset();
+		drop(container);
+		let retained_dom = TestContainer::mount(Page::Empty);
+		retained_dom.0.append_child(&retired_form).unwrap();
+		assert!(retired_form.is_connected());
+		gloo_timers::future::TimeoutFuture::new(0).await;
+
+		// Assert: the disposed binding generation cannot overwrite retained state.
+		assert_eq!(radio.answer().get(), "on");
+		assert_eq!(radio.__native_reset_epoch.get(), 0);
+
+		// A route scope may also dispose every source before the task resumes.
+		let scope = reinhardt_pages::reactive::ReactiveScope::new();
+		let scoped = scope.enter(|| {
+			form! {
+				name: DisposedRadioReset,
+				fields: {
+					answer: ChoiceField<String> { widget: RadioInput }
+				}
+			}
+		});
+		let answer = *scoped.answer();
+		answer.set(String::from("on"));
+		let container = TestContainer::mount(scoped.into_page());
+		container.native_form().reset();
+		drop(scope);
+		assert!(container.native_form().is_connected());
+		gloo_timers::future::TimeoutFuture::new(0).await;
+		assert!(answer.try_get_untracked().is_err());
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	fn radio_hydration_preserves_field_setters_and_adopts_unrelated_edits() {
+		// Arrange: SSR is stale for two fields, while the third has a browser edit.
+		let radio = form! {
+			name: PreferredRadioHydration,
+			fields: {
+				answer: ChoiceField<String> {
+					widget: RadioInput,
+					initial: "on"
+				}
+				reset: ChoiceField<String> { widget: RadioInput }
+				browser: ChoiceField<String> { widget: RadioInput }
+			}
+		};
+		let runtime = use_form(&radio).build();
+		radio.reset().set(String::from("on"));
+		let page = radio.clone().into_page();
+		let container = TestContainer::mount(Page::Empty);
+		container.0.set_inner_html(&page.render_to_string());
+		container.input("browser").set_checked(true);
+		runtime.set_value(radio.answer_field(), String::new());
+		runtime.reset_field(radio.reset_field());
+
+		// Act
+		container.hydrate(page);
+
+		// Assert
+		assert_eq!(radio.answer().get(), "");
+		assert_eq!(radio.reset().get(), "");
+		assert_eq!(radio.browser().get(), "on");
+		assert!(!container.input("answer").checked());
+		assert!(!container.input("reset").checked());
+		assert!(container.input("browser").checked());
 	}
 
 	#[rstest::rstest]
@@ -947,8 +1110,12 @@ mod browser {
 		assert!(container.input("answer").checked());
 	}
 
-	#[wasm_bindgen_test]
-	fn radio_focus_replacement_is_scoped_to_new_roots_and_descendants() {
+	#[rstest::rstest]
+	#[case::mounted(false)]
+	#[case::hydrated(true)]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	fn radio_focus_replacement_is_scoped_to_new_roots_and_descendants(#[case] hydrated: bool) {
 		// Arrange: a preceding form owns controls with matching IDs, names, and values.
 		let unrelated = TestContainer::mount(
 			PageElement::new("form")
@@ -988,10 +1155,20 @@ mod browser {
 		let runtime = use_form(&radio).build();
 		let key = runtime.push_item(radio.answers_collection(), radio.new_answers_item());
 		let focus_source = radio.clone();
-		let container = TestContainer::mount(Page::reactive(move || {
-			let _ = focus_source.answer().get();
-			focus_source.clone().into_page()
-		}));
+		let page = PageElement::new("div")
+			.child(Page::reactive(move || {
+				let _ = focus_source.answer().get();
+				focus_source.clone().into_page()
+			}))
+			.into_page();
+		let container = if hydrated {
+			let container = TestContainer::mount(Page::Empty);
+			container.0.set_inner_html(&page.render_to_string());
+			container.hydrate(page);
+			container
+		} else {
+			TestContainer::mount(page)
+		};
 		let document = web_sys::window().unwrap().document().unwrap();
 
 		// Act and assert: both a root radio and a radio below a collection wrapper keep focus.
