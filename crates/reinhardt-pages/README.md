@@ -869,8 +869,11 @@ keys, row order, and unbound values, and clear file inputs. The restored DOM and
 signals agree before runtime touched state and errors are cleared, without
 emitting change or validation events. Source writes made by later reset listeners
 or synchronously after `reset()` supersede the pending reset, including equal-value
-writes. Custom widget errors remain reactive after reset. `autocomplete` is
-preserved on scalar and collection radios,
+writes. Synchronization waits for a browser task after reset dispatch, so later
+listeners can cancel it before Rust state changes. Numeric parse errors are
+cleared with their restored values, even when a rejected editor left the source
+equal to its default. Custom widget errors remain reactive after reset.
+`autocomplete` is preserved on scalar and collection radios,
 and reactive replacements retain focus within their own subtree. For scalar
 fields, `bind: false` renders the current value without installing two-way binding.
 Bound radios use controlled bindings and typed `ResetEvent` handling. Collection

@@ -1335,6 +1335,8 @@ pub mod __private {
 	}
 	pub use bon;
 	pub use bytes;
+	#[cfg(wasm)]
+	pub use gloo_timers::future::TimeoutFuture;
 	#[cfg(native)]
 	pub use hyper;
 	pub use inventory;

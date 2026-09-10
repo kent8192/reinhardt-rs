@@ -1217,9 +1217,10 @@ pub fn head(input: TokenStream) -> TokenStream {
 /// Programmatic signal changes and `use_form(&form).build().reset()` update the
 /// checked state, with reset restoring the runtime's current default value.
 /// Clicking an already selected radio does not clear it. Scalar fields also
-/// follow native form resets, restoring the values captured when the page was
-/// created. For scalar fields, `bind: false` captures the current value without
-/// installing two-way binding.
+/// follow native form resets, restoring current defaults and clearing numeric
+/// parse errors after reset dispatch and the browser's default action finish.
+/// Later reset listeners can cancel synchronization. For scalar fields,
+/// `bind: false` captures the current value without installing two-way binding.
 ///
 /// ### Other Widgets
 ///

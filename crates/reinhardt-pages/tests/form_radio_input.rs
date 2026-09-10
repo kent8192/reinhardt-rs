@@ -98,6 +98,40 @@ fn input_tags(html: &str) -> Vec<String> {
 
 #[cfg_attr(wasm, wasm_bindgen_test)]
 #[cfg_attr(not(wasm), rstest::rstest)]
+fn native_radio_reset_compatibility_clears_nested_touched_state() {
+	// Arrange: application-owned values have already been synchronized from the DOM.
+	let radio = form! {
+		name: CompatibilityRadios,
+		fields: {
+			answer: ChoiceField<String> { widget: RadioInput }
+			answers: FieldArray {
+				fields: {
+					answer: CharField {}
+				}
+			}
+		}
+	};
+	let runtime = use_form(&radio).build();
+	let collection = radio.answers_collection();
+	let key = runtime.push_item(collection, radio.new_answers_item());
+	let path = radio.answers_answer_path(key);
+	runtime.set_path_value(path.clone(), String::from("browser value"));
+	assert!(runtime.get_collection_state(collection).is_touched);
+	assert!(runtime.get_path_state(path.clone()).is_touched);
+
+	// Act
+	runtime.sync_after_native_reset();
+
+	// Assert: compatibility synchronization clears nested flags without resetting values.
+	assert!(!runtime.get_collection_state(collection).is_touched);
+	assert!(!runtime.get_path_state(path).is_touched);
+	assert!(!runtime.form_state().is_touched.get());
+	assert!(runtime.form_state().is_dirty.get());
+	assert_eq!(runtime.get_values().answers[0].answer, "browser value");
+}
+
+#[cfg_attr(wasm, wasm_bindgen_test)]
+#[cfg_attr(not(wasm), rstest::rstest)]
 fn collection_radio_input_renders_indexed_names_and_programmatic_values() {
 	// Arrange
 	let radio = form! {
@@ -301,6 +335,91 @@ mod browser {
 			visible,
 			"radio must be visible and clickable within the {width}px viewport"
 		);
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	async fn native_radio_reset_clears_numeric_parse_errors() {
+		// Arrange: a scalar radio selects the form-level reset path for numeric controls.
+		let radio = form! {
+			name: NumericRadioReset,
+			fields: {
+				answer: ChoiceField<String> { widget: RadioInput }
+				amount: IntegerField { initial: 7 }
+				ratio: FloatField { initial: 1.5 }
+			}
+		};
+		let runtime = use_form(&radio).revalidate_on(RevalidateOn::Change).build();
+		let container = TestContainer::mount(radio.clone().into_page());
+		for changed_source in [false, true] {
+			if changed_source {
+				runtime.set_value(radio.amount_field(), 9_i64);
+				runtime.set_value(radio.ratio_field(), 2.5);
+			}
+			for name in ["amount", "ratio"] {
+				let input = container.input(name);
+				input.set_value("");
+				input
+					.dispatch_event(&web_sys::Event::new("input").unwrap())
+					.unwrap();
+			}
+			assert_eq!(runtime.trigger().unwrap_err().field_errors().len(), 2);
+
+			// Act
+			container.native_form().reset();
+			gloo_timers::future::TimeoutFuture::new(0).await;
+
+			// Assert: restored editors remain valid on revalidation and later source writes.
+			assert_eq!(container.input("amount").value(), "7");
+			assert_eq!(container.input("ratio").value(), "1.5");
+			assert_eq!(runtime.get_values().amount, 7);
+			assert_eq!(runtime.get_values().ratio, 1.5);
+			assert_eq!(runtime.trigger(), Ok(()));
+			radio.answer().set(String::from("on"));
+			assert_eq!(runtime.get_field_state(radio.amount_field()).error, None);
+			assert_eq!(runtime.get_field_state(radio.ratio_field()).error, None);
+		}
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	async fn native_radio_reset_waits_for_a_task_and_honors_later_cancellation() {
+		// Arrange
+		let radio = form! {
+			name: ResetTaskRadios,
+			fields: {
+				answer: ChoiceField<String> { widget: RadioInput }
+			}
+		};
+		let container = TestContainer::mount(radio.clone().into_page());
+		radio.answer().set(String::from("on"));
+
+		// Act: allow ready microtasks to run, while the browser task is still pending.
+		container.native_form().reset();
+		wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+			&wasm_bindgen::JsValue::NULL,
+		))
+		.await
+		.unwrap();
+
+		// Assert: synchronization is deferred until a task, not just a microtask.
+		assert_eq!(radio.answer().get(), "on");
+		gloo_timers::future::TimeoutFuture::new(0).await;
+		assert_eq!(radio.answer().get(), "");
+		assert!(!container.input("answer").checked());
+
+		// A subsequently installed reset listener can still cancel before synchronization.
+		radio.answer().set(String::from("on"));
+		let form_element = Element::new(container.native_form().into());
+		let _cancel_reset = form_element.add_event_listener_with_event("reset", |event| {
+			event.prevent_default();
+		});
+		container.native_form().reset();
+		gloo_timers::future::TimeoutFuture::new(0).await;
+		assert_eq!(radio.answer().get(), "on");
+		assert!(container.input("answer").checked());
 	}
 
 	#[wasm_bindgen_test]

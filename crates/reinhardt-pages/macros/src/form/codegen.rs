@@ -1876,6 +1876,13 @@ fn generate_form_runtime_contract(
 }
 
 fn number_parse_error_reset(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	number_parse_error_reset_on(field, quote! { self })
+}
+
+fn number_parse_error_reset_on(
+	field: &TypedFormFieldDef,
+	source: TokenStream,
+) -> Option<TokenStream> {
 	if !matches!(
 		field.field_type,
 		TypedFieldType::IntegerField | TypedFieldType::FloatField
@@ -1887,7 +1894,7 @@ fn number_parse_error_reset(field: &TypedFormFieldDef) -> Option<TokenStream> {
 		field.name,
 		span = field.name.span()
 	);
-	Some(quote! { self.#error.set(::core::option::Option::None); })
+	Some(quote! { #source.#error.set(::core::option::Option::None); })
 }
 
 /// Retains row identity and hydration preference for explicit value replacements.
@@ -5901,11 +5908,13 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 		let scalar_resets = bound_fields.iter().map(|field| {
 			let name = &field.name;
 			let value = native_reset_value(field, quote! { __defaults.#name.clone() });
+			let number_error_reset = number_parse_error_reset_on(field, quote! { __radio_form });
 			let touched_reset = custom_widget_touched_ident(field).map(|touched| {
 				quote! { __radio_form.#touched.set(false); }
 			});
 			quote! {
 				__radio_form.#name.set(#value);
+				#number_error_reset
 				#touched_reset
 			}
 		});
@@ -6003,9 +6012,11 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 					}, #pages_crate::reactive::EffectTiming::Layout));
 					// The first read installs subscriptions; later writes supersede this reset.
 					__reset_superseded.set(false);
-					// Run after the native reset and honor cancellation by other listeners.
+					// A browser task waits past reset-dispatch microtasks and the default action.
+					let __after_reset = #pages_crate::__private::TimeoutFuture::new(0);
 					#pages_crate::platform::spawn_task(async move {
 						let _reset_scope = __reset_scope;
+						__after_reset.await;
 						if !event.default_prevented() {
 							use ::wasm_bindgen::JsCast;
 							let __reset_form = event.raw().target()
