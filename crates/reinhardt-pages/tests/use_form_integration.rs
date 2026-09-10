@@ -636,11 +636,11 @@ fn use_form_can_sync_after_native_reset() {
 
 #[test]
 fn native_reset_preserves_custom_widget_and_source_subscriptions() {
-	// Arrange: an invalid custom widget coexists with ordinary bound fields.
+	// Arrange: an invalid custom widget coexists with ordinary and radio fields.
 	let booking = form! {
 		name: NativeResetCustomWidgetForm,
 		fields: {
-			answer: CharField {}
+			answer: ChoiceField<String> { widget: RadioInput }
 			name: CharField {
 				initial: "before"
 			}

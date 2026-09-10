@@ -278,7 +278,7 @@ struct GeneratedResetRegistration {
 
 impl GeneratedResetRegistration {
 	fn register(element: &Element, binding: &ControlBinding) -> Option<Self> {
-		if !binding.has_native_reset() {
+		if !binding.needs_native_reset_registration() {
 			return None;
 		}
 		let control = Rc::new(GeneratedFormControl {
@@ -422,6 +422,7 @@ impl Drop for FormResetListener {
 pub(crate) struct ControlBindingController {
 	effect: Effect,
 	_generated_reset: Option<GeneratedResetRegistration>,
+	_form_reset_owner: Option<Box<dyn std::any::Any>>,
 	_listeners: Vec<EventHandle>,
 	_reset_listener: Option<ControlResetListener>,
 	_option_observer: Option<SelectOptionObserver>,
@@ -787,11 +788,13 @@ impl ControlBindingController {
 			}
 			let reset_listener = install_control_reset_listener(&element, &binding, &state, None);
 			let generated_reset = GeneratedResetRegistration::register(&element, &binding);
+			let form_reset_owner = binding.register_form_reset_owner();
 			let effect = install_effect(element, binding, true, Rc::clone(&state));
 			return Ok((
 				Self {
 					effect,
 					_generated_reset: generated_reset,
+					_form_reset_owner: form_reset_owner,
 					_listeners: listeners,
 					_reset_listener: reset_listener,
 					_option_observer: None,
@@ -868,6 +871,7 @@ impl ControlBindingController {
 		let option_observer = install_select_option_observer(&element, &binding);
 		let reset_listener = install_control_reset_listener(&element, &binding, &state, None);
 		let generated_reset = GeneratedResetRegistration::register(&element, &binding);
+		let form_reset_owner = binding.register_form_reset_owner();
 		let effect = install_effect(element, binding, true, Rc::clone(&state));
 		if let Some(registration) = &number_binding_registration {
 			registration.set_effect(effect);
@@ -876,6 +880,7 @@ impl ControlBindingController {
 			Self {
 				effect,
 				_generated_reset: generated_reset,
+				_form_reset_owner: form_reset_owner,
 				_listeners: listeners,
 				_reset_listener: reset_listener,
 				_option_observer: option_observer,
@@ -904,6 +909,7 @@ impl ControlBindingController {
 		let option_observer = install_select_option_observer(&element, &binding);
 		let reset_listener = install_control_reset_listener(&element, &binding, &state, form_owner);
 		let generated_reset = GeneratedResetRegistration::register(&element, &binding);
+		let form_reset_owner = binding.register_form_reset_owner();
 		let effect = install_effect(element, binding, skip_first_write, Rc::clone(&state));
 		if let Some(registration) = &number_binding_registration {
 			registration.set_effect(effect);
@@ -911,6 +917,7 @@ impl ControlBindingController {
 		Ok(Self {
 			effect,
 			_generated_reset: generated_reset,
+			_form_reset_owner: form_reset_owner,
 			_listeners: listeners,
 			_reset_listener: reset_listener,
 			_option_observer: option_observer,

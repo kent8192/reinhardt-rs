@@ -263,6 +263,7 @@ jobs:
               --test navigation_guard_wasm_test \
               --test document_head_wasm_test \
               --test query_client_wasm_test \
+              --test form_radio_input \
               --test form_field_attributes --test form_radio_group \
               --test form_value_sync --test form_control_hydration_regressions
 

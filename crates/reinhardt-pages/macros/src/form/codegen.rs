@@ -1476,6 +1476,14 @@ fn generate_form_runtime_contract(
 				}
 		}
 	};
+	let default_key_updates = collections.iter().map(|collection| {
+		let name = &collection.name;
+		let keys = format_ident!("__{}_initial_keys", name);
+		quote! {
+			*self.#keys.borrow_mut() = self.#name.get_untracked()
+				.iter().map(#pages_crate::CollectionItem::key).collect();
+		}
+	});
 	let required_validation_checks: Vec<TokenStream> = all_fields
 		.iter()
 		.zip(field_variants.iter())
@@ -1485,7 +1493,7 @@ fn generate_form_runtime_contract(
 			}
 			let name = &field.name;
 			let message = format!("{} is required", name);
-			let empty_check = runtime_required_empty_check(name, &field.field_type)?;
+			let empty_check = runtime_required_empty_check(field)?;
 			Some(quote! {
 				if #empty_check {
 					error.add_field_error(#field_ident::#variant, #message);
@@ -1590,13 +1598,12 @@ fn generate_form_runtime_contract(
 					if !field.validation.required {
 						return None;
 					}
-					let field_name = field.name.clone();
 					let field_name_text = ident_to_wire_name(&field.name);
 					let field_variant = field_variant_ident(&field.name);
 					let message =
 						format!("{}.{} is required", collection_name_text, field_name_text);
 					let empty_check =
-						runtime_collection_required_empty_check(&field_name, &field.field_type)?;
+						runtime_collection_required_empty_check(field)?;
 					Some(quote! {
 						for item in self.#collection_name.get() {
 							let item_value = item.value();
@@ -1696,12 +1703,13 @@ fn generate_form_runtime_contract(
 				self.__reinhardt_reactive_scope.clone()
 			}
 
-			fn runtime_native_reset_epoch(&self) -> u64 {
-				self.__native_reset_epoch.get()
-			}
-
 			fn runtime_initial_values(&self) -> Self::Values {
 				self.__initial_values.borrow().clone()
+			}
+
+			fn runtime_set_default_values(&self, values: &Self::Values) {
+				*self.__initial_values.borrow_mut() = values.clone();
+				#(#default_key_updates)*
 			}
 
 			fn runtime_field_by_name(&self, name: &str) -> ::core::option::Option<Self::Field> {
@@ -1709,6 +1717,10 @@ fn generate_form_runtime_contract(
 					#(#field_name_arms)*
 					_ => ::core::option::Option::None,
 				}
+			}
+
+			fn runtime_native_reset_epoch(&self) -> u64 {
+				self.__native_reset_epoch.get()
 			}
 
 			fn runtime_current_values(&self) -> Self::Values {
@@ -1876,6 +1888,13 @@ fn generate_form_runtime_contract(
 }
 
 fn number_parse_error_reset(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	number_parse_error_reset_on(field, quote! { self })
+}
+
+fn number_parse_error_reset_on(
+	field: &TypedFormFieldDef,
+	source: TokenStream,
+) -> Option<TokenStream> {
 	if !matches!(
 		field.field_type,
 		TypedFieldType::IntegerField | TypedFieldType::FloatField
@@ -1887,7 +1906,7 @@ fn number_parse_error_reset(field: &TypedFormFieldDef) -> Option<TokenStream> {
 		field.name,
 		span = field.name.span()
 	);
-	Some(quote! { self.#error.set(::core::option::Option::None); })
+	Some(quote! { #source.#error.set(::core::option::Option::None); })
 }
 
 /// Retains row identity and hydration preference for explicit value replacements.
@@ -1956,11 +1975,13 @@ fn snake_to_pascal(input: &str) -> String {
 	out
 }
 
-fn runtime_required_empty_check(
-	name: &syn::Ident,
-	field_type: &TypedFieldType,
-) -> Option<TokenStream> {
-	match field_type {
+fn runtime_required_empty_check(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	let name = &field.name;
+	if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		return Some(quote! { self.#name.get() != #value });
+	}
+	match &field.field_type {
 		TypedFieldType::CharField
 		| TypedFieldType::TextField
 		| TypedFieldType::EmailField
@@ -1991,11 +2012,13 @@ fn runtime_required_empty_check(
 	}
 }
 
-fn runtime_collection_required_empty_check(
-	name: &syn::Ident,
-	field_type: &TypedFieldType,
-) -> Option<TokenStream> {
-	match field_type {
+fn runtime_collection_required_empty_check(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	let name = &field.name;
+	if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		return Some(quote! { item_value.#name != #value });
+	}
+	match &field.field_type {
 		TypedFieldType::CharField
 		| TypedFieldType::TextField
 		| TypedFieldType::EmailField
@@ -4538,9 +4561,17 @@ pub(super) fn generate(
 	let form_runtime_contract = generate_form_runtime_contract(macro_ast, pages_crate);
 	let runtime_contract_supported = supports_form_runtime_contract(&macro_ast.fields);
 	let values_ident = format_ident!("{}Values", macro_ast.name);
+	let collections = collect_collections(&macro_ast.fields);
+	let collection_key_fields = collections.iter().map(|collection| {
+		let keys = format_ident!("__{}_initial_keys", collection.name);
+		quote! {
+			#keys: ::std::rc::Rc<::std::cell::RefCell<::std::vec::Vec<#pages_crate::CollectionItemKey>>>,
+		}
+	});
 	let runtime_initial_values_field_decl = if runtime_contract_supported {
 		quote! {
 			__initial_values: ::std::rc::Rc<::std::cell::RefCell<#values_ident>>,
+			#(#collection_key_fields)*
 		}
 	} else {
 		quote! {}
@@ -4561,7 +4592,12 @@ pub(super) fn generate(
 					quote! { #name: ::std::vec::Vec::new(), }
 				},
 			));
+			let collection_keys = collections.iter().map(|collection| {
+				let keys = format_ident!("__{}_initial_keys", collection.name);
+				quote! { #keys: ::core::default::Default::default(), }
+			});
 			quote! {
+				#(#collection_keys)*
 				__initial_values: ::std::rc::Rc::new(
 					::std::cell::RefCell::new(#values_ident {
 						#(#initial_fields)*
@@ -4572,9 +4608,18 @@ pub(super) fn generate(
 			quote! {}
 		};
 	let runtime_initial_values_outer_refresh = if runtime_contract_supported {
+		let collection_keys = collections.iter().map(|collection| {
+			let name = &collection.name;
+			let keys = format_ident!("__{}_initial_keys", name);
+			quote! {
+				*__reinhardt_form.#keys.borrow_mut() = __reinhardt_form.#name.get_untracked()
+					.iter().map(#pages_crate::CollectionItem::key).collect();
+			}
+		});
 		quote! {
 			*__reinhardt_form.__initial_values.borrow_mut() =
 				#pages_crate::FormRuntimeSource::runtime_current_values(&__reinhardt_form);
+			#(#collection_keys)*
 		}
 	} else {
 		quote! {}
@@ -5855,6 +5900,206 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 
 	// Generate onsubmit handler for server_fn forms
 	let onsubmit_handler = generate_onsubmit_handler(macro_ast, pages_crate);
+	let radio_fields: Vec<_> = all_fields
+		.iter()
+		.filter(|field| field.bind && matches!(field.widget, TypedWidget::RadioInput))
+		.collect();
+	let native_reset_owner_setup = if !radio_fields.is_empty()
+		&& supports_form_runtime_contract(&macro_ast.fields)
+	{
+		quote! { let __native_reset_owner = #pages_crate::form_generated::NativeFormResetOwner::default(); }
+	} else {
+		TokenStream::new()
+	};
+	let native_reset_registration =
+		if !radio_fields.is_empty() && supports_form_runtime_contract(&macro_ast.fields) {
+			// The form listener owns reset ordering and supersession for all of its controls.
+			quote! {
+				{
+					let owner = __native_reset_owner.clone();
+					move |binding: #pages_crate::component::ControlBinding| {
+						let owner = owner.clone();
+						binding.with_form_reset_owner(move || owner.register())
+					}
+				}
+			}
+		} else {
+			quote! {
+				move |binding: #pages_crate::component::ControlBinding| {
+					let epoch = __native_reset_epoch.clone();
+					binding.on_native_reset(move || epoch.update(|version| *version = version.wrapping_add(1)))
+				}
+			}
+		};
+	let (radio_reset_setup, radio_reset_listener) = if radio_fields.is_empty()
+		|| !supports_form_runtime_contract(&macro_ast.fields)
+	{
+		(TokenStream::new(), TokenStream::new())
+	} else {
+		let bound_fields: Vec<_> = all_fields.iter().filter(|field| field.bind).collect();
+		let scalar_resets = bound_fields.iter().map(|field| {
+			let name = &field.name;
+			let value = native_reset_value(field, quote! { __defaults.#name.clone() });
+			let number_error_reset = number_parse_error_reset_on(field, quote! { __radio_form });
+			let touched_reset = custom_widget_touched_ident(field).map(|touched| {
+				quote! { __radio_form.#touched.set(false); }
+			});
+			quote! {
+				__radio_form.#name.set(#value);
+				#number_error_reset
+				#touched_reset
+			}
+		});
+		let scalar_dom_resets = bound_fields.iter().map(|field| {
+			let name = field.name.to_string();
+			generate_native_reset_dom_sync(field, quote! { #name })
+		});
+		let collections = collect_collections(&macro_ast.fields);
+		let collection_snapshots = collections.iter().map(|collection| {
+			let name = &collection.name;
+			let snapshot = format_ident!("__{}_native_defaults", name);
+			quote! {
+				#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+				let #snapshot = self.#name.get_untracked();
+			}
+		});
+		let collection_snapshot_clones: Vec<_> = collections
+			.iter()
+			.map(|collection| {
+				let snapshot = format_ident!("__{}_native_defaults", collection.name);
+				quote! { let #snapshot = #snapshot.clone(); }
+			})
+			.collect();
+		let collection_resets = collections.iter().map(|collection| {
+			let name = &collection.name;
+			let snapshot = format_ident!("__{}_native_defaults", name);
+			let keys = format_ident!("__{}_initial_keys", name);
+			let fields = collect_scalar_fields(&collection.fields);
+			let resets = fields.iter().filter(|field| field.bind).map(|field| {
+				let name = &field.name;
+				let value = native_reset_value(field, quote! { __item_defaults.#name.clone() });
+				quote! { __item_value.#name = #value; }
+			});
+			quote! {
+				__radio_form.#name.update(|items| {
+					for item in items.iter_mut() {
+						let __item_defaults = __radio_form.#keys.borrow().iter()
+							.position(|key| *key == item.key())
+							.and_then(|index| __defaults.#name.get(index).cloned())
+							.or_else(|| #snapshot.iter().find(|initial| initial.key() == item.key())
+								.map(|initial| initial.value().clone()))
+							.unwrap_or_default();
+						let mut __item_value = item.value().clone();
+						#(#resets)*
+						*item = #pages_crate::CollectionItem::new(item.key(), item.index(), __item_value);
+					}
+				});
+			}
+		});
+		let collection_dom_resets = collections.iter().map(|collection| {
+			let name = &collection.name;
+			let collection_name = name.to_string();
+			let fields = collect_scalar_fields(&collection.fields);
+			let resets = fields.iter().filter(|field| field.bind).map(|field| {
+				let field_name = field.name.to_string();
+				generate_native_reset_dom_sync(
+					field,
+					quote! {
+						::std::format!("{}[{}][{}]", #collection_name, item.index(), #field_name)
+					},
+				)
+			});
+			quote! {
+				for item in __radio_form.#name.get_untracked() {
+					let item_value = item.value();
+					#(#resets)*
+				}
+			}
+		});
+		(
+			quote! {
+				#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+				let __radio_form = self.clone();
+				#(#collection_snapshots)*
+			},
+			quote! {
+				#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+				let form_element = form_element.on(
+					#pages_crate::event::KnownEvent::Reset,
+					#pages_crate::typed_event_handler::<#pages_crate::event::ResetEvent, _>(move |event: #pages_crate::event::ResetEvent| {
+					let __radio_form = __radio_form.clone();
+					use ::wasm_bindgen::JsCast;
+					let Some(__reset_form) = event.raw().target()
+						.and_then(|target| target.dyn_into::<::web_sys::HtmlFormElement>().ok()) else {
+						return;
+					};
+					let __reset_is_live = {
+						let form = __reset_form.clone();
+						let lifetime = __radio_form.__native_reset_epoch.clone();
+						let owner = __native_reset_owner.clone();
+						let generation = owner.generation();
+						move || owner.is_active(generation) && form.is_connected() && lifetime.try_get_untracked().is_ok()
+					};
+					if !__reset_is_live() {
+						return;
+					}
+					#(#collection_snapshot_clones)*
+					let __reset_superseded = ::std::rc::Rc::new(::std::cell::Cell::new(false));
+					let __reset_scope = #pages_crate::reactive::ReactiveScope::new();
+					__reset_scope.enter(|| #pages_crate::reactive::Effect::new_with_timing({
+						let __watched_form = __radio_form.clone();
+						let __watch_is_live = __reset_is_live.clone();
+						let __reset_superseded = ::std::rc::Rc::clone(&__reset_superseded);
+						move || {
+							if !__watch_is_live() {
+								__reset_superseded.set(true);
+								return;
+							}
+							let _ = #pages_crate::FormRuntimeSource::runtime_current_values(&__watched_form);
+							for field in #pages_crate::FormRuntimeSource::runtime_fields(&__watched_form) {
+								let _ = #pages_crate::FormRuntimeSource::runtime_custom_widget_error(&__watched_form, *field);
+							}
+							__reset_superseded.set(true);
+						}
+					}, #pages_crate::reactive::EffectTiming::Layout));
+					// The first read installs subscriptions; later writes supersede this reset.
+					__reset_superseded.set(false);
+					// A browser task waits past reset-dispatch microtasks and the default action.
+					let __after_reset = #pages_crate::__private::TimeoutFuture::new(0);
+					#pages_crate::platform::spawn_task(async move {
+						let _reset_scope = __reset_scope;
+						__after_reset.await;
+						// RAII control registrations and the source scope bound this deferred work.
+						if !__reset_is_live() {
+							return;
+						}
+						if !event.default_prevented() {
+							let __reset_form = Some(__reset_form);
+							let __sync_dom = || {
+								if let Some(__reset_form) = __reset_form.as_ref() {
+									let __reset_values = #pages_crate::FormRuntimeSource::runtime_current_values(&__radio_form);
+									let item_value = &__reset_values;
+									#(#scalar_dom_resets)*
+									#(#collection_dom_resets)*
+								}
+							};
+							if !__reset_superseded.get() {
+								let __defaults = __radio_form.__initial_values.borrow().clone();
+								#pages_crate::reactive::batch(|| {
+									#(#scalar_resets)*
+									#(#collection_resets)*
+									__sync_dom();
+									__radio_form.__native_reset_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+								});
+							}
+							// Preserve later writes after the browser reset and any reactive replacements.
+							__sync_dom();
+						}
+					});
+				}));
+			},
+		)
+	};
 
 	quote! {
 		pub fn into_page(self) -> #pages_crate::component::Page {
@@ -5871,11 +6116,86 @@ fn generate_into_page(macro_ast: &TypedFormMacro, pages_crate: &TokenStream) -> 
 			let __explicitly_reset = self.__explicitly_reset.clone();
 			let __source_preferred_fields = self.__source_preferred_fields.clone();
 			let __native_reset_epoch = self.__native_reset_epoch.clone();
+
+			#native_reset_owner_setup
+			let __register_native_reset = #native_reset_registration;
 			#(#signal_bindings)*
+			#radio_reset_setup
 
 			#onsubmit_handler
+			#radio_reset_listener
 
 			form_element.into_page()
+		}
+	}
+}
+
+/// File controls always clear during native reset, regardless of stored defaults.
+fn native_reset_value(field: &TypedFormFieldDef, default: TokenStream) -> TokenStream {
+	if matches!(
+		field.field_type,
+		TypedFieldType::FileField | TypedFieldType::ImageField
+	) {
+		quote! { ::core::option::Option::None }
+	} else {
+		default
+	}
+}
+
+/// Applies reset values to controls after reactive collection replacements finish.
+fn generate_native_reset_dom_sync(field: &TypedFormFieldDef, name: TokenStream) -> TokenStream {
+	if matches!(field.widget, TypedWidget::CustomExperimental(_)) {
+		return TokenStream::new();
+	}
+	let field_name = &field.name;
+	let value = collection_field_value_expr(field);
+	let apply = match &field.widget {
+		TypedWidget::CheckboxInput => {
+			let checked = collection_field_checked_expr(field);
+			quote! {
+				if let Some(input) = control.dyn_ref::<::web_sys::HtmlInputElement>() {
+					input.set_checked(#checked);
+				}
+			}
+		}
+		TypedWidget::RadioInput | TypedWidget::RadioSelect => quote! {
+			if let Some(input) = control.dyn_ref::<::web_sys::HtmlInputElement>() {
+				let value = #value;
+				input.set_checked(input.value() == value);
+			}
+		},
+		TypedWidget::SelectMultiple => quote! {
+			let values: ::std::vec::Vec<_> = item_value.#field_name.iter()
+				.map(::std::string::ToString::to_string).collect();
+			if let Ok(options) = control.query_selector_all("option") {
+				for index in 0..options.length() {
+					if let Some(option) = options.item(index)
+						.and_then(|node| node.dyn_into::<::web_sys::HtmlOptionElement>().ok())
+					{
+						option.set_selected(values.contains(&option.value()));
+					}
+				}
+			}
+		},
+		_ => quote! {
+			if let Some(input) = control.dyn_ref::<::web_sys::HtmlInputElement>() {
+				input.set_value(&#value);
+			} else if let Some(textarea) = control.dyn_ref::<::web_sys::HtmlTextAreaElement>() {
+				textarea.set_value(&#value);
+			} else if let Some(select) = control.dyn_ref::<::web_sys::HtmlSelectElement>() {
+				select.set_value(&#value);
+			}
+		},
+	};
+	quote! {
+		if let Ok(controls) = __reset_form.query_selector_all(&::std::format!("[name=\"{}\"]", #name)) {
+			for index in 0..controls.length() {
+				if let Some(control) = controls.item(index)
+					.and_then(|node| node.dyn_into::<::web_sys::Element>().ok())
+				{
+					#apply
+				}
+			}
 		}
 	}
 }
@@ -6660,18 +6980,21 @@ fn generate_collection_view(
 			let __explicitly_reset = __explicitly_reset.clone();
 			let __source_preferred_fields = __source_preferred_fields.clone();
 			let __native_reset_epoch = __native_reset_epoch.clone();
-			let __shape = #pages_crate::reactive::Signal::new(::std::vec::Vec::new());
-			let __shape_effect = ::std::rc::Rc::new(#pages_crate::reactive::Effect::new_with_timing({
-				let collection = __collection_signal.clone();
-				let shape = __shape.clone();
-				move || {
-					let next = collection.get().iter().map(|item| (item.key(), item.index())).collect::<::std::vec::Vec<_>>();
-					if shape.get_untracked() != next { shape.set(next); }
-				}
-			}, #pages_crate::reactive::EffectTiming::Layout));
+			let __shape_scope = ::std::rc::Rc::new(#pages_crate::reactive::ReactiveScope::new());
+			let __shape = __shape_scope.enter(|| {
+				let shape = #pages_crate::reactive::Signal::new(::std::vec::Vec::new());
+				let _shape_effect = #pages_crate::reactive::Effect::new_with_timing({
+					let collection = __collection_signal.clone();
+					move || {
+						let next = collection.get().iter().map(|item| (item.key(), item.index())).collect::<::std::vec::Vec<_>>();
+						if shape.get_untracked() != next { shape.set(next); }
+					}
+				}, #pages_crate::reactive::EffectTiming::Layout);
+				shape
+			});
 			#pages_crate::component::Page::reactive(move || {
 				let _ = &__path_signals;
-				let _ = &__shape_effect;
+				let _ = &__shape_scope;
 				let _ = __shape.get();
 				let __items = __collection_signal.get_untracked();
 				let mut __item_pages = ::std::vec::Vec::new();
@@ -6737,17 +7060,45 @@ fn generate_collection_field_view(
 		TypedFieldType::FileField | TypedFieldType::ImageField
 	) {
 		quote! {}
+	} else if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		quote! { .attr("value", #value) }
 	} else {
 		quote! { .attr("value", #field_value) }
 	};
 	let checked_attr = if matches!(field.widget, TypedWidget::CheckboxInput) {
 		let checked = collection_field_checked_expr(field);
 		quote! { .bool_attr("checked", #checked) }
+	} else if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		let field_name = &field.name;
+		quote! { .bool_attr("checked", item_value.#field_name == #value) }
 	} else {
 		quote! {}
 	};
 
 	let input_element = match &field.widget {
+		TypedWidget::RadioInput => {
+			let value = radio_input_value(field);
+			let binding = generate_collection_control_binding(
+				field,
+				pages_crate,
+				collection_name,
+				Some(quote! { #value }),
+			);
+			quote! {
+				PageElement::new("input")
+					.attr("type", "radio")
+					.attr("name", __field_name.clone())
+					.attr("id", __field_id.clone())
+					#value_attr
+					.attr("class", #input_class)
+					#autocomplete_attr
+					#checked_attr
+					#field_attrs
+					#binding
+			}
+		}
 		TypedWidget::Textarea => {
 			quote! {
 				PageElement::new("textarea")
@@ -7066,7 +7417,7 @@ fn generate_control_binding_operations(
 				};
 				let __read_radio_value = (#radio_value).to_string();
 				let __write_radio_value = __read_radio_value.clone();
-				ControlBinding::from_parts(
+				__register_native_reset(ControlBinding::from_parts(
 					ControlKind::Radio,
 					Some(__read_radio_value.clone()),
 					__binding_target,
@@ -7085,10 +7436,7 @@ fn generate_control_binding_operations(
 					let __explicitly_reset = __explicitly_reset.clone();
 					let __source_preferred_fields = __source_preferred_fields.clone();
 					move || __explicitly_reset.get() || __source_preferred_fields.borrow().contains(&__source_preference_key)
-				}).on_native_reset({
-					let epoch = __native_reset_epoch.clone();
-					move || epoch.update(|version| *version = version.wrapping_add(1))
-				})
+				}))
 			})
 		};
 	} else if matches!(field.widget, TypedWidget::CheckboxInput)
@@ -7147,17 +7495,14 @@ fn generate_control_binding_operations(
 						::std::boxed::Box::new(move || write(value)) as ::std::boxed::Box<dyn FnOnce()>
 					}
 				};
-			ControlBinding::from_parts(ControlKind::#kind, None, __binding_target, move || #read, move |__value| {
+			__register_native_reset(ControlBinding::from_parts(ControlKind::#kind, None, __binding_target, move || #read, move |__value| {
 				#write
 				Ok(#pages_crate::component::ControlWriteOutcome::Committed)
 			}, __snapshot_restore).with_lifetime_target(__binding_source).prefer_source_on_hydration({
 				let __explicitly_reset = __explicitly_reset.clone();
 				let __source_preferred_fields = __source_preferred_fields.clone();
 				move || __explicitly_reset.get() || __source_preferred_fields.borrow().contains(&__source_preference_key)
-			}).on_native_reset({
-				let epoch = __native_reset_epoch.clone();
-				move || epoch.update(|version| *version = version.wrapping_add(1))
-			})
+			}))
 		})
 	}
 }
@@ -7269,10 +7614,7 @@ fn generate_collection_bind_listener(
 	pages_crate: &TokenStream,
 	collection_name: &str,
 ) -> TokenStream {
-	let field_name = &field.name;
 	let field_name_str = ident_to_wire_name(&field.name);
-	let field_type = field_type_to_value_type(&field.field_type);
-	let collection_name_str = collection_name.to_string();
 	let (event_type, payload_type) = match field.widget {
 		TypedWidget::Textarea => (
 			quote! { #pages_crate::event::KnownEvent::Input },
@@ -7281,6 +7623,7 @@ fn generate_collection_bind_listener(
 		TypedWidget::Select
 		| TypedWidget::SelectMultiple
 		| TypedWidget::CheckboxInput
+		| TypedWidget::RadioInput
 		| TypedWidget::RadioSelect => (
 			quote! { #pages_crate::event::KnownEvent::Change },
 			quote! { #pages_crate::event::ChangeEvent },
@@ -7290,40 +7633,7 @@ fn generate_collection_bind_listener(
 			quote! { #pages_crate::event::InputEvent },
 		),
 	};
-	let assignment = quote! {
-		let mut __items = __field_collection_signal.get();
-		if let ::core::option::Option::Some(__position) =
-			__items.iter().position(|entry| entry.key() == __item_key)
-		{
-			let __item_index = __items[__position].index();
-			let mut __item_value = __items[__position].value().clone();
-			let __path_value = __new_value.clone();
-			__item_value.#field_name = __new_value;
-			__items[__position] = #pages_crate::CollectionItem::new(
-				__item_key,
-				__item_index,
-				__item_value,
-			);
-			__field_collection_signal.set(__items);
-			let __path_key = ::std::format!(
-				"{}:{:?}:{}",
-				#collection_name_str,
-				__item_key,
-				#field_name_str,
-			);
-			let __path_signal = __field_path_signals
-				.borrow()
-				.get(&__path_key)
-				.and_then(|signal| {
-					signal
-						.downcast_ref::<#pages_crate::reactive::Signal<#field_type>>()
-						.cloned()
-				});
-			if let ::core::option::Option::Some(__path_signal) = __path_signal {
-				__path_signal.set(__path_value);
-			}
-		}
-	};
+	let assignment = collection_field_assignment(field, pages_crate, collection_name);
 	let typed_update = collection_field_typed_update(
 		&field.field_type,
 		&field.widget,
@@ -7331,6 +7641,13 @@ fn generate_collection_bind_listener(
 		&field_name_str,
 		assignment,
 	);
+	let typed_update = if matches!(field.widget, TypedWidget::RadioInput) {
+		quote! {
+			if matches!(event.checked(), ::core::result::Result::Ok(true)) { #typed_update }
+		}
+	} else {
+		typed_update
+	};
 
 	quote! {
 		.on(#event_type, {
@@ -7581,7 +7898,6 @@ fn generate_field_view(
 	let label_text = field.display.label.as_deref().unwrap_or(&field_name_str);
 	let placeholder = field.display.placeholder.as_deref().unwrap_or("");
 	let required = field.validation.required;
-
 	let autocomplete_attr = field.display.autocomplete.as_deref().map(|val| {
 		quote! { .attr("autocomplete", #val) }
 	});
@@ -7629,6 +7945,54 @@ fn generate_field_view(
 
 	// Generate input element based on widget type
 	let input_element = match &field.widget {
+		TypedWidget::RadioInput => {
+			let value = radio_input_value(field);
+			let binding = signal_ident.map(|signal| {
+				quote! {
+					.control_binding(
+						__radio_register_native_reset(#pages_crate::component::ControlBinding::radio(
+							#signal, ::std::string::String::from(#value),
+						)).prefer_source_on_hydration({
+							let explicitly_reset = __radio_explicitly_reset.clone();
+							let preferred_fields = __radio_source_preferred_fields.clone();
+							move || explicitly_reset.get() || preferred_fields.borrow().contains(#field_name_str)
+						})
+					)
+				}
+			});
+			let input = quote! {
+				PageElement::new("input")
+					.attr("type", "radio")
+					.attr("name", #field_name_str)
+					.attr("id", #field_name_str)
+					.attr("value", #value)
+					.attr("class", #input_class)
+					#autocomplete_attr
+					.bool_attr("checked", __radio_checked)
+					#field_attrs
+					#binding
+			};
+			if let Some(signal_ident) = signal_ident {
+				quote! {
+					{
+					let __radio_register_native_reset = __register_native_reset.clone();
+					let __radio_explicitly_reset = self.__explicitly_reset.clone();
+					let __radio_source_preferred_fields = self.__source_preferred_fields.clone();
+					#pages_crate::component::Page::reactive(move || {
+						let __radio_checked = #signal_ident.get_untracked() == #value;
+						#input.into_page()
+					})
+					}
+				}
+			} else {
+				quote! {
+					{
+						let __radio_checked = self.#field_name.get_untracked() == #value;
+						#input
+					}
+				}
+			}
+		}
 		TypedWidget::CustomExperimental(custom) => {
 			let component = &custom.component;
 			let adapter = &custom.adapter;
@@ -8081,17 +8445,13 @@ fn generate_typed_control_binding(
 			let field_name = ::std::string::String::from(stringify!(#signal_ident).trim_end_matches("_signal"));
 			move || explicitly_reset.get() || preferred.borrow().contains(&field_name)
 		})
-		.on_native_reset({
-			let epoch = self.__native_reset_epoch;
-			move || epoch.update(|epoch| *epoch = epoch.wrapping_add(1))
-		})
 	};
 	match (widget, field_type) {
 		(TypedWidget::CheckboxInput, TypedFieldType::BooleanField) => quote! {
-			.control_binding(
+			.control_binding(__register_native_reset(
 				#pages_crate::component::ControlBinding::checkbox(#signal_ident.clone())
 				#hydration_preference
-			)
+			))
 		},
 		(
 			TypedWidget::Select,
@@ -8102,27 +8462,27 @@ fn generate_typed_control_binding(
 			| TypedFieldType::UrlField
 			| TypedFieldType::SlugField,
 		) => quote! {
-			.control_binding(
+			.control_binding(__register_native_reset(
 				#pages_crate::component::ControlBinding::select_one(#signal_ident.clone())
 				#hydration_preference
-			)
+			))
 		},
 		(TypedWidget::Select, TypedFieldType::ChoiceField { inner }) if type_is_string(inner) => {
 			quote! {
-				.control_binding(
+				.control_binding(__register_native_reset(
 					#pages_crate::component::ControlBinding::select_one(#signal_ident.clone())
 					#hydration_preference
-				)
+				))
 			}
 		}
 		(TypedWidget::SelectMultiple, TypedFieldType::MultipleChoiceField { inner })
 			if type_is_string(inner) =>
 		{
 			quote! {
-				.control_binding(
+				.control_binding(__register_native_reset(
 					#pages_crate::component::ControlBinding::select_many(#signal_ident.clone())
 					#hydration_preference
-				)
+				))
 			}
 		}
 		(TypedWidget::NumberInput, TypedFieldType::IntegerField | TypedFieldType::FloatField) => {
@@ -8131,12 +8491,12 @@ fn generate_typed_control_binding(
 				signal_ident.to_string().trim_end_matches("_signal")
 			);
 			quote! {
-				.control_binding(
+				.control_binding(__register_native_reset(
 					#pages_crate::component::ControlBinding::number_with_error(
 						#signal_ident.clone(), self.#error.clone(),
 					)
 					#hydration_preference
-				)
+				))
 			}
 		}
 		(
@@ -8152,10 +8512,10 @@ fn generate_typed_control_binding(
 			| TypedFieldType::UrlField
 			| TypedFieldType::SlugField,
 		) => quote! {
-			.control_binding(
+			.control_binding(__register_native_reset(
 				#pages_crate::component::ControlBinding::text(#signal_ident.clone())
 				#hydration_preference
-			)
+			))
 		},
 		(
 			TypedWidget::TextInput
@@ -8166,13 +8526,24 @@ fn generate_typed_control_binding(
 			TypedFieldType::ChoiceField { inner },
 		) if type_is_string(inner) => {
 			quote! {
-				.control_binding(
+				.control_binding(__register_native_reset(
 					#pages_crate::component::ControlBinding::text(#signal_ident.clone())
 					#hydration_preference
-				)
+				))
 			}
 		}
 		_ => TokenStream::new(),
+	}
+}
+
+/// Returns the fixed option value, independently of the current field selection.
+fn radio_input_value(field: &TypedFormFieldDef) -> TokenStream {
+	match field.static_choices.first() {
+		Some(TypedChoiceItem::Option(option)) => {
+			let value = &option.value;
+			quote! { #value }
+		}
+		_ => quote! { "on" },
 	}
 }
 
@@ -8510,6 +8881,7 @@ fn generate_bind_listener(
 		TypedWidget::Select
 		| TypedWidget::SelectMultiple
 		| TypedWidget::CheckboxInput
+		| TypedWidget::RadioInput
 		| TypedWidget::RadioSelect => (
 			quote! { #pages_crate::event::KnownEvent::Change },
 			quote! { #pages_crate::event::ChangeEvent },
@@ -8551,6 +8923,14 @@ fn generate_bind_listener(
 				}
 			}
 		}
+	};
+
+	let extraction = if matches!(widget, TypedWidget::RadioInput) {
+		quote! {
+			if matches!(event.checked(), ::core::result::Result::Ok(true)) { #extraction }
+		}
+	} else {
+		extraction
 	};
 
 	quote! {
@@ -9248,9 +9628,21 @@ fn generate_load_initial_values(
 		})
 		.collect();
 	let runtime_initial_values_refresh = if runtime_contract_supported {
+		let collection_keys =
+			collect_collections(&macro_ast.fields)
+				.into_iter()
+				.map(|collection| {
+					let name = &collection.name;
+					let keys = format_ident!("__{}_initial_keys", name);
+					quote! {
+						*self.#keys.borrow_mut() = self.#name.get_untracked()
+							.iter().map(#pages_crate::CollectionItem::key).collect();
+					}
+				});
 		quote! {
 			*self.__initial_values.borrow_mut() =
 				#pages_crate::FormRuntimeSource::runtime_current_values(self);
+			#(#collection_keys)*
 		}
 	} else {
 		quote! {}

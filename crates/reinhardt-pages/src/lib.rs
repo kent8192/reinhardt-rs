@@ -870,6 +870,8 @@
 //! |---|---|---|
 //! | `MonthInput` | `<input type="month">` | string field |
 //! | `WeekInput` | `<input type="week">` | string field |
+//! | `RadioInput` | one `<input type="radio">` | `ChoiceField<String>` |
+//! | `RadioSelect` | a group of `<input type="radio">` controls | choice field |
 //! | `ResetButton` | `<button type="reset">` | none |
 //! | `Button` | `<button type="button">` | none |
 //! | `ImageInput` | `<input type="image">` | none |
@@ -878,6 +880,33 @@
 //! | `Output` | `<output>` | none |
 //! | `Meter` | `<meter>` | none |
 //! | `Progress` | `<progress>` | none |
+//!
+//! `RadioInput` renders one string-valued choice, with the field's name and ID.
+//! Its fixed option value defaults to `"on"`; exactly one static option such as
+//! `choices: [("yes", "Yes")]` supplies another value and an optional label.
+//! An explicit field label takes precedence, and an option marked `disabled`
+//! disables the input. Multiple, empty, grouped, or dynamic options are rejected;
+//! use `RadioSelect` with `choices_from` for a group and `CheckboxInput` for booleans.
+//!
+//! The radio is checked when its field value equals its option value. Selecting
+//! it updates the field, and programmatic values and runtime resets update the
+//! checked state. Runtime validation requires a required radio's value to match
+//! its fixed option, including collection fields. Hydration honors field-specific
+//! setters and resets without discarding unrelated browser edits. Forms with a
+//! bound scalar radio restore all bound scalar and collection fields on native
+//! reset, including defaults loaded after mounting
+//! or saved through [`UseFormReturn::reset_default_values`].
+//! Collection defaults follow item keys; rows without persisted loader defaults
+//! use their values at page construction, or field defaults for new rows. Reset
+//! preserves collection keys, order, and unbound values, and clears file inputs.
+//! DOM and signal values are restored before runtime touched state and errors are
+//! cleared without change or validation events. Later reset listeners or immediate
+//! source writes after `reset()` supersede the pending reset, even for equal values.
+//! Password controls share that reset owner. Pending resets stop when mounted
+//! controls or their source scope are disposed. Custom widget errors remain
+//! reactive after reset. Scalar and collection radios preserve `autocomplete`
+//! and retain focus within their reactive subtree during mounting and hydration.
+//! For scalar fields, `bind: false` snapshots the current value without binding.
 //!
 //! Typed native attributes are accepted for the controls that support them:
 //!
@@ -1330,6 +1359,8 @@ pub mod __private {
 	}
 	pub use bon;
 	pub use bytes;
+	#[cfg(wasm)]
+	pub use gloo_timers::future::TimeoutFuture;
 	#[cfg(native)]
 	pub use hyper;
 	pub use inventory;

@@ -52,7 +52,7 @@ use std::rc::{Rc, Weak};
 use std::task::{Context, Poll};
 
 use crate::reactive::{
-	Action, ActionPhase, Effect, EffectTiming, ReactiveScope, Signal, use_action,
+	Action, ActionPhase, Effect, EffectTiming, ReactiveScope, Signal, untracked, use_action,
 };
 use crate::server_fn::ServerFnError;
 use reinhardt_core::reactive::{ScopeId, current_scope_id, scope::enter_scope};
@@ -611,6 +611,10 @@ pub trait FormRuntimeSource: Clone + 'static {
 	/// Returns current defaults captured by the form definition.
 	fn runtime_initial_values(&self) -> Self::Values;
 
+	/// Updates the generated native-reset baseline when runtime defaults change.
+	#[doc(hidden)]
+	fn runtime_set_default_values(&self, _values: &Self::Values) {}
+
 	/// Reads current values from generated field controls.
 	fn runtime_current_values(&self) -> Self::Values;
 
@@ -1061,8 +1065,7 @@ fn clear_errors_in_state<Form>(
 	for field in form.runtime_fields() {
 		form.runtime_set_custom_widget_error(*field, None);
 	}
-	*custom_widget_error_fields.borrow_mut() =
-		crate::reactive::untracked(|| collect_custom_widget_errors(form));
+	*custom_widget_error_fields.borrow_mut() = untracked(|| collect_custom_widget_errors(form));
 	state.field_errors.set(HashMap::new());
 	collection_errors.set(HashMap::new());
 	path_errors.set(HashMap::new());
@@ -1906,8 +1909,12 @@ where
 	}
 
 	/// Makes the current values the defaults and clears dirty state.
+	///
+	/// Generated forms also update their native-reset baseline and collection-key
+	/// mapping, so subsequent browser resets use the same saved defaults.
 	pub fn reset_default_values(&self) {
 		let values = self.get_values();
+		self.form.runtime_set_default_values(&values);
 		*self.default_values.borrow_mut() = values.clone();
 		*self.path_default_values.borrow_mut() = self.form.runtime_path_values_from_values(&values);
 		self.state.is_dirty.set(false);
@@ -2207,6 +2214,7 @@ where
 			ResetOnDeps::ExplicitOnly => {}
 		}
 
+		self.form.runtime_set_default_values(&new_defaults);
 		*self.default_values.borrow_mut() = new_defaults;
 		if resets_all_values {
 			self.rebuild_path_default_values();

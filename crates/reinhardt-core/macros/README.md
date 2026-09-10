@@ -370,3 +370,18 @@ reinhardt = { version = "0.1.2", features = ["core"] }
 ```
 
 **Note:** The `core` feature (included in `standard` and `full`) is required to use the macros from this crate.
+
+## Testing
+
+Run the generated model payload parity fixture from the workspace root:
+
+```bash
+cargo nextest run -p reinhardt-macros --test model_wasm_parity --all-features
+```
+
+The fixture requires the `wasm32-unknown-unknown` target, Node.js, and
+`wasm-bindgen-test-runner`. It builds and executes the same model declarations
+on native and WASM in a fresh temporary target directory, then verifies that
+the WASM dependency graph excludes database runtimes. The workspace Nextest
+configuration reserves both default test slots and allows up to 60 minutes
+for the sequential cold builds on CI runners with one Cargo build job.
