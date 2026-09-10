@@ -1476,6 +1476,14 @@ fn generate_form_runtime_contract(
 				}
 		}
 	};
+	let default_key_updates = collections.iter().map(|collection| {
+		let name = &collection.name;
+		let keys = format_ident!("__{}_initial_keys", name);
+		quote! {
+			*self.#keys.borrow_mut() = self.#name.get_untracked()
+				.iter().map(#pages_crate::CollectionItem::key).collect();
+		}
+	});
 	let required_validation_checks: Vec<TokenStream> = all_fields
 		.iter()
 		.zip(field_variants.iter())
@@ -1485,7 +1493,7 @@ fn generate_form_runtime_contract(
 			}
 			let name = &field.name;
 			let message = format!("{} is required", name);
-			let empty_check = runtime_required_empty_check(name, &field.field_type)?;
+			let empty_check = runtime_required_empty_check(field)?;
 			Some(quote! {
 				if #empty_check {
 					error.add_field_error(#field_ident::#variant, #message);
@@ -1590,13 +1598,12 @@ fn generate_form_runtime_contract(
 					if !field.validation.required {
 						return None;
 					}
-					let field_name = field.name.clone();
 					let field_name_text = ident_to_wire_name(&field.name);
 					let field_variant = field_variant_ident(&field.name);
 					let message =
 						format!("{}.{} is required", collection_name_text, field_name_text);
 					let empty_check =
-						runtime_collection_required_empty_check(&field_name, &field.field_type)?;
+						runtime_collection_required_empty_check(field)?;
 					Some(quote! {
 						for item in self.#collection_name.get() {
 							let item_value = item.value();
@@ -1698,6 +1705,11 @@ fn generate_form_runtime_contract(
 
 			fn runtime_initial_values(&self) -> Self::Values {
 				self.__initial_values.borrow().clone()
+			}
+
+			fn runtime_set_default_values(&self, values: &Self::Values) {
+				*self.__initial_values.borrow_mut() = values.clone();
+				#(#default_key_updates)*
 			}
 
 			fn runtime_field_by_name(&self, name: &str) -> ::core::option::Option<Self::Field> {
@@ -1963,11 +1975,13 @@ fn snake_to_pascal(input: &str) -> String {
 	out
 }
 
-fn runtime_required_empty_check(
-	name: &syn::Ident,
-	field_type: &TypedFieldType,
-) -> Option<TokenStream> {
-	match field_type {
+fn runtime_required_empty_check(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	let name = &field.name;
+	if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		return Some(quote! { self.#name.get() != #value });
+	}
+	match &field.field_type {
 		TypedFieldType::CharField
 		| TypedFieldType::TextField
 		| TypedFieldType::EmailField
@@ -1998,11 +2012,13 @@ fn runtime_required_empty_check(
 	}
 }
 
-fn runtime_collection_required_empty_check(
-	name: &syn::Ident,
-	field_type: &TypedFieldType,
-) -> Option<TokenStream> {
-	match field_type {
+fn runtime_collection_required_empty_check(field: &TypedFormFieldDef) -> Option<TokenStream> {
+	let name = &field.name;
+	if matches!(field.widget, TypedWidget::RadioInput) {
+		let value = radio_input_value(field);
+		return Some(quote! { item_value.#name != #value });
+	}
+	match &field.field_type {
 		TypedFieldType::CharField
 		| TypedFieldType::TextField
 		| TypedFieldType::EmailField

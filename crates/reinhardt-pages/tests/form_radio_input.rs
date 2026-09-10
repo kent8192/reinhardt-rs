@@ -244,6 +244,71 @@ async fn native_radio_reset_epoch_clears_runtime_state_after_nested_batches() {
 	assert_eq!(event_count.get(), 2);
 }
 
+#[rstest::rstest]
+#[cfg_attr(wasm, test_attr(wasm_bindgen_test))]
+fn required_radio_input_rejects_unselected_scalar_and_collection_values() {
+	use reinhardt_pages::UseFormSubmitOutcome;
+
+	// Arrange: required radios compare against their option, including an empty option.
+	let radio = form! {
+		name: RequiredRadios,
+		fields: {
+			answer: ChoiceField<String> { widget: RadioInput, required }
+			empty: ChoiceField<String> {
+				widget: RadioInput, required, choices: [("", "Empty")], initial: "other"
+			}
+			answers: FieldArray {
+				fields: {
+					answer: ChoiceField<String> {
+						widget: RadioInput, required, choices: [("yes", "Yes")]
+					}
+				}
+			}
+		}
+	};
+	let runtime = use_form(&radio).build();
+	let key = runtime.push_item(radio.answers_collection(), radio.new_answers_item());
+	let path = radio.answers_answer_path(key);
+
+	// Act and assert: neither empty nor nonmatching values can submit.
+	for value in ["", "other"] {
+		runtime.set_value(radio.answer_field(), String::from(value));
+		runtime.set_path_value(path.clone(), String::from(value));
+		assert_eq!(
+			runtime.handle_submit(),
+			UseFormSubmitOutcome::ValidationFailed
+		);
+		assert_eq!(
+			runtime
+				.get_field_state(radio.answer_field())
+				.error
+				.unwrap()
+				.message(),
+			"answer is required"
+		);
+		assert_eq!(
+			runtime
+				.get_field_state(radio.empty_field())
+				.error
+				.unwrap()
+				.message(),
+			"empty is required"
+		);
+		assert_eq!(
+			runtime
+				.get_path_state(path.clone())
+				.error
+				.unwrap()
+				.message(),
+			"answers.answer is required"
+		);
+	}
+	runtime.set_value(radio.answer_field(), String::from("on"));
+	runtime.set_value(radio.empty_field(), String::new());
+	runtime.set_path_value(path, String::from("yes"));
+	assert_eq!(runtime.trigger(), Ok(()));
+}
+
 #[cfg(wasm)]
 mod browser {
 	use super::*;
@@ -335,6 +400,49 @@ mod browser {
 			visible,
 			"radio must be visible and clickable within the {width}px viewport"
 		);
+	}
+
+	#[rstest::rstest]
+	#[test_attr(wasm_bindgen_test)]
+	#[serial_test::serial(form_radio_input_dom)]
+	async fn native_radio_reset_uses_updated_runtime_defaults() {
+		// Arrange: defaults change after the DOM and a keyed row have mounted.
+		let radio = form! {
+			name: UpdatedRadioDefaults,
+			fields: {
+				answer: ChoiceField<String> { widget: RadioInput }
+				name: CharField { initial: "initial" }
+				answers: FieldArray {
+					fields: { answer: ChoiceField<String> { widget: RadioInput } }
+				}
+			}
+		};
+		let runtime = use_form(&radio).build();
+		let container = TestContainer::mount(radio.clone().into_page());
+		let key = runtime.push_item(radio.answers_collection(), radio.new_answers_item());
+		let path = radio.answers_answer_path(key);
+		runtime.set_value(radio.answer_field(), String::from("on"));
+		runtime.set_value(radio.name_field(), String::from("saved"));
+		runtime.set_path_value(path.clone(), String::from("on"));
+		runtime.reset_default_values();
+		runtime.set_value(radio.answer_field(), String::new());
+		runtime.set_value(radio.name_field(), String::from("edited"));
+		runtime.set_path_value(path.clone(), String::new());
+
+		// Act
+		container.native_form().reset();
+		gloo_timers::future::TimeoutFuture::new(0).await;
+
+		// Assert: native values and runtime dirtiness share the saved baseline.
+		assert_eq!(runtime.get_values().answer, "on");
+		assert_eq!(runtime.get_values().name, "saved");
+		assert_eq!(runtime.get_values().answers[0].answer, "on");
+		assert!(container.input("answer").checked());
+		assert!(container.input("answers_0_answer").checked());
+		assert_eq!(container.input("name").value(), "saved");
+		assert!(!runtime.form_state().is_dirty.get());
+		assert!(!runtime.get_path_state(path).is_dirty);
+		assert_eq!(radio.answers().get()[0].key(), key);
 	}
 
 	#[rstest::rstest]
